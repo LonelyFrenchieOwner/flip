@@ -2,23 +2,30 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
-
 import os
 from dotenv import load_dotenv
+from flask import Flask
 
+# Initialize environment and bot
 load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-
-# Your server (guild) ID
+# Discord Bot setup
 GUILD_ID = 1333567666983538718
-
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Hypixel API URLs
 BAZAAR_API_URL = "https://api.hypixel.net/skyblock/bazaar"
 ITEMS_API_URL = "https://api.hypixel.net/resources/skyblock/items"
+
+# Initialize Flask app for health check
+app = Flask(__name__)
+
+# Health check route
+@app.route('/')
+def health_check():
+    return "Bot is alive!", 200
 
 @bot.event
 async def on_ready():
@@ -78,4 +85,16 @@ async def fetch_json(url: str):
         async with session.get(url) as response:
             return await response.json()
 
-bot.run(BOT_TOKEN)
+# Run both the bot and Flask app
+if __name__ == '__main__':
+    import threading
+
+    # Run Flask in a separate thread for health check
+    def run_flask():
+        app.run(host="0.0.0.0", port=8000)
+
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
+
+    # Run Discord bot
+    bot.run(BOT_TOKEN)
