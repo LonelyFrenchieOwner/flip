@@ -5,132 +5,80 @@ import aiohttp
 import os
 from dotenv import load_dotenv
 from flask import Flask
-import logging
+import random  # for picking a random JSON file
 import threading
 
-# -------------------------------------------------------------------
-# ENV + LOGGING + DISCORD BOT
-# -------------------------------------------------------------------
+# Initialize environment and bot
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-logging.basicConfig(level=logging.DEBUG)
 
-GUILD_ID = 1333567666983538718  # <-- CHANGE to your server's ID
+# Discord Bot setup
+GUILD_ID = 1333567666983538718
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# -------------------------------------------------------------------
-# FLASK APP FOR HEALTH CHECK
-# -------------------------------------------------------------------
+# Hypixel API URLs
+BAZAAR_API_URL = "https://api.hypixel.net/skyblock/bazaar"
+ITEMS_API_URL = "https://api.hypixel.net/resources/skyblock/items"
+
+# NEU GitHub
+NEU_ITEMS_LISTING_URL = (
+    "https://api.github.com/repos/NotEnoughUpdates/NotEnoughUpdates-REPO/contents/items"
+)
+NEU_ITEM_RAW_URL = (
+    "https://raw.githubusercontent.com/NotEnoughUpdates/NotEnoughUpdates-REPO/"
+    "master/items/{}.json"
+)
+
+# Initialize Flask app for health check
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
     return "Bot is alive!", 200
 
-# -------------------------------------------------------------------
-# HYPIXEL & NEU CONSTANTS
-# -------------------------------------------------------------------
-BAZAAR_API_URL = "https://api.hypixel.net/skyblock/bazaar"
-AUCTION_API_URL = "https://api.hypixel.net/skyblock/auctions"
-ITEMS_API_URL = "https://api.hypixel.net/resources/skyblock/items"
-NEU_ITEMS_URL = (
-    "https://raw.githubusercontent.com/NotEnoughUpdates/NotEnoughUpdates-REPO/"
-    "master/items/{}.json"
-)
-
-# -------------------------------------------------------------------
-# HELPER FUNCTIONS
-# -------------------------------------------------------------------
-async def fetch_json(url: str):
-    """Fetch JSON data from a URL using content_type=None to bypass MIME issues."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    logging.error(f"Error fetching data from {url}: {response.status}")
-                    return None
-                return await response.json(content_type=None)
-    except Exception as e:
-        logging.error(f"Error fetching data from {url}: {e}")
-        return None
-
-# Global cache for NEU items (fetched once at startup)
-neu_items_cache = {}
-
-async def fetch_neu_items():
-    """Fetch NEU item data (all .json files) from GitHub once."""
-    neu_data = {}
-    try:
-        async with aiohttp.ClientSession() as session:
-            api_url = "https://api.github.com/repos/NotEnoughUpdates/NotEnoughUpdates-REPO/contents/items"
-            async with session.get(api_url) as response:
-                if response.status != 200:
-                    logging.error(f"Failed to fetch NEU items list. Status code: {response.status}")
-                    return neu_data
-                files = await response.json(content_type=None)
-                for file in files:
-                    item_id = file["name"].replace(".json", "")
-                    url = NEU_ITEMS_URL.format(item_id)
-                    async with session.get(url) as item_response:
-                        if item_response.status != 200:
-                            logging.error(
-                                f"Failed to fetch data for item '{item_id}' (status: {item_response.status})"
-                            )
-                            if item_response.status in (403, 429):
-                                logging.error("Likely rate-limited by GitHub.")
-                            continue
-                        item_data = await item_response.json(content_type=None)
-                        neu_data[item_id] = item_data
-    except Exception as e:
-        logging.error(f"Error fetching NEU items: {e}")
-    return neu_data
-
-# -------------------------------------------------------------------
-# BOT EVENTS
-# -------------------------------------------------------------------
 @bot.event
 async def on_ready():
-    logging.info(f"✅ Logged in as {bot.user}")
-
-    # Cache NEU items on startup
-    global neu_items_cache
-    neu_items_cache = await fetch_neu_items()
-    logging.info(f"NEU items fetched; total count: {len(neu_items_cache)}")
-
-    # Sync guild commands (they appear faster as guild commands)
+    print(f"✅ Logged in as {bot.user}")
     try:
-        guild_obj = discord.Object(id=GUILD_ID)
-        synced = await bot.tree.sync(guild=guild_obj)
-        logging.info(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}.")
-        logging.debug(f"Registered commands: {[cmd.name for cmd in bot.tree.get_commands(guild=guild_obj)]}")
-    except Exception as e:
-        logging.error(f"⚠️ Sync error: {e}")
+        guild = discord.Object(id=GUILD_ID)
+        # Clear old commands for this guild
+        bot.tree.clear_commands(guild=guild)
 
-# -------------------------------------------------------------------
-# SLASH COMMANDS (Guild-specific)
-# -------------------------------------------------------------------
-@bot.tree.command(
-    name="npcflip",
-    description="Shows the top 15 NPC flips based on buy order and instant buy",
-    guild=discord.Object(id=GUILD_ID)
-)
+        # Register your existing /npcflip command
+        bot.tree.add_command(npc_flip)
+        # Register the new /craft command
+        bot.tree.add_command(craft)
+
+        synced = await bot.tree.sync(guild=guild)
+        print(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}.")
+    except Exception as e:
+        print(f"⚠️ Sync error: {e}")
+
+@bot.tree.command(name="npcflip", description="Shows the top 15 NPC flips based on buy order and instant buy")
 async def npc_flip(interaction: discord.Interaction):
     await interaction.response.defer()
+    
     bazaar_data = await fetch_json(BAZAAR_API_URL)
     items_data = await fetch_json(ITEMS_API_URL)
+    if not bazaar_data or "products" not in bazaar_data:
+        return await interaction.followup.send("Failed to fetch Bazaar data.")
+    if not items_data or "items" not in items_data:
+        return await interaction.followup.send("Failed to fetch Items data.")
     
-    if not bazaar_data or not items_data:
-        logging.error("Failed to fetch data from Hypixel API for NPC flips.")
-        return await interaction.followup.send("Failed to fetch data from Hypixel API.")
+    npc_prices = {
+        item["id"]: item["npc_sell_price"]
+        for item in items_data.get("items", [])
+        if "npc_sell_price" in item
+    }
     
-    npc_prices = {item["id"]: item["npc_sell_price"] for item in items_data.get("items", []) if "npc_sell_price" in item}
     flips = []
     for item_id, data in bazaar_data["products"].items():
         if item_id in npc_prices:
             npc_sell_price = npc_prices[item_id]
             insta_buy_price = data["quick_status"].get("buyPrice", 0)
             buy_order_price = data["quick_status"].get("sellPrice", 0)
+
             if insta_buy_price > 0:
                 flips.append((item_id, npc_sell_price - insta_buy_price, "insta", insta_buy_price))
             if buy_order_price > 0:
@@ -141,91 +89,87 @@ async def npc_flip(interaction: discord.Interaction):
     
     description = "**BUY ORDER**                 |            **INSTA BUY**\n"
     description += "--------------------------------------------------------------\n\n"
+    
     for bo, ib in zip(buy_order_flips, insta_flips):
         bo_name = bo[0].replace("_", " ").title()
         ib_name = ib[0].replace("_", " ").title()
         bo_profit = f"**{bo[1]:,.0f}** coins profit"
         ib_profit = f"**{ib[1]:,.0f}** coins profit"
+        
         description += f"{bo_name:<25} ({bo_profit})  **|**  {ib_name:<25} ({ib_profit})\n\n"
     
     embed = discord.Embed(title="💰 Top 15 NPC Flips", description=description, color=discord.Color.gold())
     embed.set_footer(text="Hypixel Skyblock Bazaar Flipping Bot")
     await interaction.followup.send(embed=embed)
 
-@bot.tree.command(
-    name="craftflip",
-    description="Shows the top 15 craft flips based on lowest BIN and Bazaar price",
-    guild=discord.Object(id=GUILD_ID)
-)
-async def craft_flip(interaction: discord.Interaction):
-    # Wrap defer in try/except to catch Unknown interaction errors.
-    try:
-        if not interaction.response.is_done():
-            await interaction.response.defer()
-    except discord.errors.NotFound as e:
-        logging.error(f"Interaction not found when deferring in craftflip: {e}")
-        return
+# ------------------------------------------------
+# NEW: /craft command
+# ------------------------------------------------
+@bot.tree.command(name="craft", description="Fetch a random recipe from NEU repo and show it.")
+async def craft(interaction: discord.Interaction):
+    await interaction.response.defer()
 
-    bazaar_data = await fetch_json(BAZAAR_API_URL)
-    auction_data = await fetch_json(AUCTION_API_URL)
-    
-    if not bazaar_data or not auction_data or not neu_items_cache:
-        logging.error("Failed to fetch Bazaar, Auction, or NEU items data.")
-        return await interaction.followup.send("Failed to fetch necessary data.")
-    
-    # Build a mapping of the lowest BIN price by item name
-    lowest_bin = {}
-    for auction in auction_data.get("auctions", []):
-        if auction.get("bin", False):
-            item_id = auction.get("item_name", "").replace(" ", "_").upper()
-            price = auction["starting_bid"]
-            if item_id not in lowest_bin or price < lowest_bin[item_id]:
-                lowest_bin[item_id] = price
-    
-    flips = []
-    for item_id, item_data in neu_items_cache.items():
-        crafting_info = item_data.get("crafting", {})
-        materials = crafting_info.get("materials", [])
-        if not materials:
-            continue
-        craft_cost = 0
-        for mat in materials:
-            mat_id = mat["id"]
-            mat_count = mat["count"]
-            product = bazaar_data["products"].get(mat_id, {})
-            quick_status = product.get("quick_status", {})
-            mat_sell_price = quick_status.get("sellPrice", 0)
-            if mat_sell_price <= 0:
-                craft_cost = 0
-                break
-            craft_cost += mat_sell_price * mat_count
-        if craft_cost <= 0:
-            continue
-        final_id = item_id.upper()
-        bin_price = lowest_bin.get(final_id, float('inf'))
-        bazaar_sell = bazaar_data["products"].get(final_id, {}).get("quick_status", {}).get("sellPrice", float('inf'))
-        lowest_price = min(bin_price, bazaar_sell)
-        if lowest_price == float('inf'):
-            continue
-        profit = lowest_price - craft_cost
-        flips.append((item_id.replace("_", " ").title(), profit, craft_cost, lowest_price))
-    
-    top_flips = sorted(flips, key=lambda x: x[1], reverse=True)[:15]
-    description = "**Top 15 Craft Flips**\n\n"
-    for name, profit, cost, price in top_flips:
-        description += f"🔹 **{name}** - **{profit:,.0f}** coins profit\n"
-        description += f"   🏷️ Craft Cost: {cost:,.0f} | 🏪 Lowest Price: {price:,.0f}\n\n"
-    
-    embed = discord.Embed(title="💰 Top 15 Craft Flips", description=description, color=discord.Color.gold())
+    # 1) Fetch the directory listing of NEU items
+    files = await fetch_json(NEU_ITEMS_LISTING_URL)
+    if not files or not isinstance(files, list):
+        return await interaction.followup.send("Failed to fetch NEU items listing.")
+
+    # 2) Pick a random .json file
+    random_file = random.choice(files)  # picks from the first 1000 if > 1000
+    item_id = random_file["name"].replace(".json", "")
+
+    # 3) Fetch the item data
+    item_url = NEU_ITEM_RAW_URL.format(item_id)
+    item_data = await fetch_json(item_url)
+    if not item_data:
+        return await interaction.followup.send(f"Failed to fetch item data for `{item_id}`.")
+
+    # 4) Check if there's a "crafting" key
+    crafting_info = item_data.get("crafting", {})
+    if not crafting_info:
+        return await interaction.followup.send(
+            f"**{item_id}** doesn't seem to have a 'crafting' section."
+        )
+
+    # Let's build a short text from the materials
+    mats = crafting_info.get("materials", [])
+    if not mats:
+        return await interaction.followup.send(
+            f"**{item_id}** has a 'crafting' section but no 'materials' listed."
+        )
+
+    # Build a nice description
+    recipe_description = f"**Random Item:** `{item_id}`\n\n"
+    recipe_description += "**Recipe Materials**:\n"
+    for mat in mats:
+        mat_id = mat["id"]
+        mat_count = mat["count"]
+        recipe_description += f"- {mat_count}x {mat_id}\n"
+
+    # Send in an embed
+    embed = discord.Embed(
+        title=f"Random Recipe: {item_id}",
+        description=recipe_description,
+        color=discord.Color.blue()
+    )
     await interaction.followup.send(embed=embed)
 
-# -------------------------------------------------------------------
-# RUN THE BOT & FLASK HEALTH CHECK
-# -------------------------------------------------------------------
-def run_flask():
-    app.run(host="0.0.0.0", port=8000)
+# ------------------------------------------------
+# UTILITY: Fetch JSON with content_type=None
+# ------------------------------------------------
+async def fetch_json(url: str):
+    """Fetch JSON data from a URL. No error-checking beyond basic fetch."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            # We'll bypass content-type checks
+            return await response.json(content_type=None)
 
+# Run both the bot and Flask app
 if __name__ == '__main__':
+    def run_flask():
+        app.run(host="0.0.0.0", port=8000)
+
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
+
     bot.run(BOT_TOKEN)
