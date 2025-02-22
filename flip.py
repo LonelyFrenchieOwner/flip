@@ -78,8 +78,9 @@ async def on_ready():
         bot.tree.clear_commands(guild=guild)
 
         # Register commands explicitly
-        bot.tree.add_command(npc_flip)
-        bot.tree.add_command(craft_flip)
+
+        #  bot.tree.add_command(npc_flip)
+        # bot.tree.add_command(craft_flip)
 
         synced = await bot.tree.sync(guild=guild)
         logging.info(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}.")
