@@ -5,10 +5,14 @@ import aiohttp
 import os
 from dotenv import load_dotenv
 from flask import Flask
+import logging
 
 # Initialize environment and bot
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)  # This will log all messages at DEBUG level and above
 
 # Discord Bot setup
 GUILD_ID = 1333567666983538718
@@ -29,46 +33,68 @@ def health_check():
     return "Bot is alive!", 200
 
 async def fetch_json(url: str):
-    """Fetch JSON data from a URL"""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            return await response.json()
+    """Fetch JSON data from a URL with error logging"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logging.error(f"Error fetching data from {url}: {response.status}")
+                    return None
+                data = await response.json()
+                logging.debug(f"Data fetched from {url}: {data}")
+                return data
+    except Exception as e:
+        logging.error(f"Error occurred while fetching data from {url}: {e}")
+        return None
 
 async def fetch_neu_items():
-    """Fetch NEU item data from GitHub dynamically"""
+    """Fetch NEU item data from GitHub dynamically with error logging"""
     neu_data = {}
-    async with aiohttp.ClientSession() as session:
-        async with session.get("https://api.github.com/repos/NotEnoughUpdates/NotEnoughUpdates-REPO/contents/items") as response:
-            files = await response.json()
-            
-            for file in files:
-                item_id = file["name"].replace(".json", "")
-                async with session.get(NEU_ITEMS_URL.format(item_id)) as item_response:
-                    item_data = await item_response.json()
-                    neu_data[item_id] = item_data
-    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://api.github.com/repos/NotEnoughUpdates/NotEnoughUpdates-REPO/contents/items") as response:
+                if response.status != 200:
+                    logging.error("Failed to fetch NEU items list.")
+                    return neu_data
+                
+                files = await response.json()
+                logging.debug(f"Fetched NEU item files: {files}")
+                
+                for file in files:
+                    item_id = file["name"].replace(".json", "")
+                    async with session.get(NEU_ITEMS_URL.format(item_id)) as item_response:
+                        if item_response.status != 200:
+                            logging.error(f"Failed to fetch data for item {item_id}")
+                            continue
+                        item_data = await item_response.json()
+                        neu_data[item_id] = item_data
+                        logging.debug(f"Fetched data for item {item_id}: {item_data}")
+    except Exception as e:
+        logging.error(f"Error occurred while fetching NEU items: {e}")
     return neu_data
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user}")
+    logging.info(f"✅ Logged in as {bot.user}")
     try:
         guild = discord.Object(id=GUILD_ID)
         bot.tree.clear_commands(guild=guild)
         bot.tree.add_command(npc_flip)
         bot.tree.add_command(craft_flip)
         synced = await bot.tree.sync(guild=guild)
-        print(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}.")
+        logging.info(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}.")
     except Exception as e:
-        print(f"⚠️ Sync error: {e}")
+        logging.error(f"⚠️ Sync error: {e}")
 
 @bot.tree.command(name="npcflip", description="Shows the top 15 NPC flips based on buy order and instant buy")
 async def npc_flip(interaction: discord.Interaction):
     await interaction.response.defer()
-    
+
     bazaar_data = await fetch_json(BAZAAR_API_URL)
     items_data = await fetch_json(ITEMS_API_URL)
-    if "products" not in bazaar_data or "items" not in items_data:
+    
+    if not bazaar_data or not items_data:
+        logging.error("Failed to fetch data from Hypixel API for NPC flips.")
         return await interaction.followup.send("Failed to fetch data from Hypixel API.")
     
     npc_prices = {item["id"]: item["npc_sell_price"] for item in items_data.get("items", []) if "npc_sell_price" in item}
@@ -106,13 +132,14 @@ async def npc_flip(interaction: discord.Interaction):
 @bot.tree.command(name="craftflip", description="Shows the top 15 craft flips based on lowest BIN and Bazaar price")
 async def craft_flip(interaction: discord.Interaction):
     await interaction.response.defer()
-    
+
     bazaar_data = await fetch_json(BAZAAR_API_URL)
     auction_data = await fetch_json(AUCTION_API_URL)
     neu_items = await fetch_neu_items()
 
-    if "products" not in bazaar_data:
-        return await interaction.followup.send("Failed to fetch Bazaar data from Hypixel API.")
+    if not bazaar_data or not auction_data or not neu_items:
+        logging.error("Failed to fetch Bazaar, Auction, or NEU items data.")
+        return await interaction.followup.send("Failed to fetch necessary data.")
 
     # Process auction data (find lowest BIN for each item)
     lowest_bin = {}
