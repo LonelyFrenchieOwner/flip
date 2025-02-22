@@ -40,23 +40,25 @@ NEU_ITEMS_URL = (
 # HELPER FUNCTIONS
 # -------------------------------------------------------------------
 async def fetch_json(url: str):
-    """Fetch JSON data from a URL with error logging."""
+    """Fetch JSON data from a URL with error logging.
+       Uses content_type=None to bypass mime type issues."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status != 200:
                     logging.error(f"Error fetching data from {url}: {response.status}")
                     return None
-                return await response.json()
+                # Bypass content type check by setting content_type=None
+                return await response.json(content_type=None)
     except Exception as e:
         logging.error(f"Error fetching data from {url}: {e}")
         return None
 
-# We’ll cache NEU items globally
+# We'll cache NEU items globally
 neu_items_cache = {}
 
 async def fetch_neu_items():
-    """Fetch NEU item data (all .jsons) from GitHub once."""
+    """Fetch NEU item data (all .json files) from GitHub once."""
     neu_data = {}
     try:
         async with aiohttp.ClientSession() as session:
@@ -67,7 +69,7 @@ async def fetch_neu_items():
                     logging.error(f"Failed to fetch NEU items list. Status code: {response.status}")
                     return neu_data
                 
-                files = await response.json()
+                files = await response.json(content_type=None)
                 
                 # 2. For each .json file, fetch the actual item data
                 for file in files:
@@ -82,7 +84,7 @@ async def fetch_neu_items():
                             if item_response.status in (403, 429):
                                 logging.error("Likely rate-limited by GitHub.")
                             continue
-                        item_data = await item_response.json()
+                        item_data = await item_response.json(content_type=None)
                         neu_data[item_id] = item_data
 
     except Exception as e:
