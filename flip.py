@@ -5,7 +5,7 @@ import aiohttp
 import os
 from dotenv import load_dotenv
 from flask import Flask
-import random  # for picking a random JSON file
+import random
 import threading
 
 # Initialize environment and bot
@@ -45,10 +45,10 @@ async def on_ready():
         # Clear old commands for this guild
         bot.tree.clear_commands(guild=guild)
 
-        # Register your existing /npcflip command
+        # Register the npcflip command
         bot.tree.add_command(npc_flip)
-        # Register the new /craft command
-        bot.tree.add_command(craft)
+        # Register the NEW craftflip command (random recipe)
+        bot.tree.add_command(craftflip)
 
         synced = await bot.tree.sync(guild=guild)
         print(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}.")
@@ -68,7 +68,7 @@ async def npc_flip(interaction: discord.Interaction):
     
     npc_prices = {
         item["id"]: item["npc_sell_price"]
-        for item in items_data.get("items", [])
+        for item in items_data["items"]
         if "npc_sell_price" in item
     }
     
@@ -84,6 +84,7 @@ async def npc_flip(interaction: discord.Interaction):
             if buy_order_price > 0:
                 flips.append((item_id, npc_sell_price - buy_order_price, "buyorder", buy_order_price))
     
+    # Sort and grab top 15
     insta_flips = sorted([f for f in flips if f[2] == "insta"], key=lambda x: x[1], reverse=True)[:15]
     buy_order_flips = sorted([f for f in flips if f[2] == "buyorder"], key=lambda x: x[1], reverse=True)[:15]
     
@@ -95,27 +96,25 @@ async def npc_flip(interaction: discord.Interaction):
         ib_name = ib[0].replace("_", " ").title()
         bo_profit = f"**{bo[1]:,.0f}** coins profit"
         ib_profit = f"**{ib[1]:,.0f}** coins profit"
-        
         description += f"{bo_name:<25} ({bo_profit})  **|**  {ib_name:<25} ({ib_profit})\n\n"
     
     embed = discord.Embed(title="💰 Top 15 NPC Flips", description=description, color=discord.Color.gold())
     embed.set_footer(text="Hypixel Skyblock Bazaar Flipping Bot")
     await interaction.followup.send(embed=embed)
 
-# ------------------------------------------------
-# NEW: /craft command
-# ------------------------------------------------
-@bot.tree.command(name="craft", description="Fetch a random recipe from NEU repo and show it.")
-async def craft(interaction: discord.Interaction):
+#
+# NEW /craftflip COMMAND that shows a RANDOM RECIPE from NEU
+#
+@bot.tree.command(name="craftflip", description="Grab a random recipe from the NEU repo and display it")
+async def craftflip(interaction: discord.Interaction):
     await interaction.response.defer()
-
     # 1) Fetch the directory listing of NEU items
     files = await fetch_json(NEU_ITEMS_LISTING_URL)
     if not files or not isinstance(files, list):
         return await interaction.followup.send("Failed to fetch NEU items listing.")
-
-    # 2) Pick a random .json file
-    random_file = random.choice(files)  # picks from the first 1000 if > 1000
+    
+    # 2) Pick a random .json file from the list
+    random_file = random.choice(files)  # picks from the first 1000 if more than 1000 exist
     item_id = random_file["name"].replace(".json", "")
 
     # 3) Fetch the item data
@@ -124,29 +123,27 @@ async def craft(interaction: discord.Interaction):
     if not item_data:
         return await interaction.followup.send(f"Failed to fetch item data for `{item_id}`.")
 
-    # 4) Check if there's a "crafting" key
+    # 4) Check for a "crafting" key
     crafting_info = item_data.get("crafting", {})
     if not crafting_info:
         return await interaction.followup.send(
             f"**{item_id}** doesn't seem to have a 'crafting' section."
         )
 
-    # Let's build a short text from the materials
     mats = crafting_info.get("materials", [])
     if not mats:
         return await interaction.followup.send(
             f"**{item_id}** has a 'crafting' section but no 'materials' listed."
         )
 
-    # Build a nice description
+    # Build a description from the materials
     recipe_description = f"**Random Item:** `{item_id}`\n\n"
     recipe_description += "**Recipe Materials**:\n"
     for mat in mats:
-        mat_id = mat["id"]
+        mat_name = mat["id"]
         mat_count = mat["count"]
-        recipe_description += f"- {mat_count}x {mat_id}\n"
+        recipe_description += f"- {mat_count}x {mat_name}\n"
 
-    # Send in an embed
     embed = discord.Embed(
         title=f"Random Recipe: {item_id}",
         description=recipe_description,
@@ -154,14 +151,10 @@ async def craft(interaction: discord.Interaction):
     )
     await interaction.followup.send(embed=embed)
 
-# ------------------------------------------------
-# UTILITY: Fetch JSON with content_type=None
-# ------------------------------------------------
+# Utility function to fetch JSON (bypassing MIME type checks)
 async def fetch_json(url: str):
-    """Fetch JSON data from a URL. No error-checking beyond basic fetch."""
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
-            # We'll bypass content-type checks
             return await response.json(content_type=None)
 
 # Run both the bot and Flask app
@@ -169,7 +162,7 @@ if __name__ == '__main__':
     def run_flask():
         app.run(host="0.0.0.0", port=8000)
 
+    import random
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
-
     bot.run(BOT_TOKEN)
