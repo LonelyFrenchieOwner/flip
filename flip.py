@@ -17,15 +17,37 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Hypixel API URLs
 BAZAAR_API_URL = "https://api.hypixel.net/skyblock/bazaar"
+AUCTION_API_URL = "https://api.hypixel.net/skyblock/auctions"
 ITEMS_API_URL = "https://api.hypixel.net/resources/skyblock/items"
+NEU_ITEMS_URL = "https://raw.githubusercontent.com/NotEnoughUpdates/NotEnoughUpdates-REPO/master/items/{}.json"
 
 # Initialize Flask app for health check
 app = Flask(__name__)
 
-# Health check route
 @app.route('/')
 def health_check():
     return "Bot is alive!", 200
+
+async def fetch_json(url: str):
+    """Fetch JSON data from a URL"""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            return await response.json()
+
+async def fetch_neu_items():
+    """Fetch NEU item data from GitHub dynamically"""
+    neu_data = {}
+    async with aiohttp.ClientSession() as session:
+        async with session.get("https://api.github.com/repos/NotEnoughUpdates/NotEnoughUpdates-REPO/contents/items") as response:
+            files = await response.json()
+            
+            for file in files:
+                item_id = file["name"].replace(".json", "")
+                async with session.get(NEU_ITEMS_URL.format(item_id)) as item_response:
+                    item_data = await item_response.json()
+                    neu_data[item_id] = item_data
+    
+    return neu_data
 
 @bot.event
 async def on_ready():
@@ -34,6 +56,7 @@ async def on_ready():
         guild = discord.Object(id=GUILD_ID)
         bot.tree.clear_commands(guild=guild)
         bot.tree.add_command(npc_flip)
+        bot.tree.add_command(craft_flip)
         synced = await bot.tree.sync(guild=guild)
         print(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}.")
     except Exception as e:
@@ -80,21 +103,60 @@ async def npc_flip(interaction: discord.Interaction):
     embed.set_footer(text="Hypixel Skyblock Bazaar Flipping Bot")
     await interaction.followup.send(embed=embed)
 
-async def fetch_json(url: str):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            return await response.json()
+@bot.tree.command(name="craftflip", description="Shows the top 15 craft flips based on lowest BIN and Bazaar price")
+async def craft_flip(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
+    bazaar_data = await fetch_json(BAZAAR_API_URL)
+    auction_data = await fetch_json(AUCTION_API_URL)
+    neu_items = await fetch_neu_items()
+
+    if "products" not in bazaar_data:
+        return await interaction.followup.send("Failed to fetch Bazaar data from Hypixel API.")
+
+    # Process auction data (find lowest BIN for each item)
+    lowest_bin = {}
+    for auction in auction_data.get("auctions", []):
+        if auction.get("bin", False):  # Ensure it's a BIN auction
+            item_id = auction.get("item_name", "").replace(" ", "_").upper()
+            price = auction["starting_bid"]
+            if item_id not in lowest_bin or price < lowest_bin[item_id]:
+                lowest_bin[item_id] = price
+
+    # Process crafting flips
+    flips = []
+    for item_id, item_data in neu_items.items():
+        craft_cost = sum(
+            bazaar_data["products"].get(mat["id"], {}).get("quick_status", {}).get("sellPrice", 0) * mat["count"]
+            for mat in item_data.get("crafting", {}).get("materials", [])
+        )
+
+        if craft_cost > 0:
+            lowest_price = min(lowest_bin.get(item_id, float('inf')), bazaar_data["products"].get(item_id, {}).get("quick_status", {}).get("sellPrice", float('inf')))
+            profit = lowest_price - craft_cost
+            flips.append((item_id.replace("_", " ").title(), profit, craft_cost, lowest_price))
+
+    # Sort by highest profit
+    top_flips = sorted(flips, key=lambda x: x[1], reverse=True)[:15]
+
+    # Format output
+    description = "**Top 15 Craft Flips**\n\n"
+    for name, profit, cost, price in top_flips:
+        description += f"🔹 **{name}** - **{profit:,.0f}** coins profit\n"
+        description += f"   🏷️ Craft Cost: {cost:,.0f} coins | 🏪 Lowest Price: {price:,.0f} coins\n\n"
+
+    embed = discord.Embed(title="💰 Top 15 Craft Flips", description=description, color=discord.Color.gold())
+    embed.set_footer(text="Hypixel Skyblock Bazaar Flipping Bot")
+    await interaction.followup.send(embed=embed)
 
 # Run both the bot and Flask app
 if __name__ == '__main__':
     import threading
 
-    # Run Flask in a separate thread for health check
     def run_flask():
         app.run(host="0.0.0.0", port=8000)
 
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
 
-    # Run Discord bot
     bot.run(BOT_TOKEN)
