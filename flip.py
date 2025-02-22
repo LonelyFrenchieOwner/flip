@@ -12,7 +12,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Set up logging
-logging.basicConfig(level=logging.DEBUG)  # This will log all messages at DEBUG level and above
+logging.basicConfig(level=logging.DEBUG)  # Log all messages at DEBUG level
 
 # Discord Bot setup
 GUILD_ID = 1333567666983538718
@@ -41,14 +41,13 @@ async def fetch_json(url: str):
                     logging.error(f"Error fetching data from {url}: {response.status}")
                     return None
                 data = await response.json()
-                logging.debug(f"Data fetched from {url}: {data}")
                 return data
     except Exception as e:
-        logging.error(f"Error occurred while fetching data from {url}: {e}")
+        logging.error(f"Error fetching data from {url}: {e}")
         return None
 
 async def fetch_neu_items():
-    """Fetch NEU item data from GitHub dynamically with error logging"""
+    """Fetch NEU item data from GitHub dynamically"""
     neu_data = {}
     try:
         async with aiohttp.ClientSession() as session:
@@ -58,7 +57,6 @@ async def fetch_neu_items():
                     return neu_data
                 
                 files = await response.json()
-                logging.debug(f"Fetched NEU item files: {files}")
                 
                 for file in files:
                     item_id = file["name"].replace(".json", "")
@@ -68,9 +66,8 @@ async def fetch_neu_items():
                             continue
                         item_data = await item_response.json()
                         neu_data[item_id] = item_data
-                        logging.debug(f"Fetched data for item {item_id}: {item_data}")
     except Exception as e:
-        logging.error(f"Error occurred while fetching NEU items: {e}")
+        logging.error(f"Error fetching NEU items: {e}")
     return neu_data
 
 @bot.event
@@ -79,10 +76,17 @@ async def on_ready():
     try:
         guild = discord.Object(id=GUILD_ID)
         bot.tree.clear_commands(guild=guild)
+
+        # Register commands explicitly
         bot.tree.add_command(npc_flip)
         bot.tree.add_command(craft_flip)
+
         synced = await bot.tree.sync(guild=guild)
         logging.info(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}.")
+        
+        # Debugging: List all registered commands
+        logging.debug(f"Registered commands: {[cmd.name for cmd in bot.tree.get_commands()]}")
+
     except Exception as e:
         logging.error(f"⚠️ Sync error: {e}")
 
@@ -126,7 +130,6 @@ async def npc_flip(interaction: discord.Interaction):
         description += f"{bo_name:<25} ({bo_profit})  **|**  {ib_name:<25} ({ib_profit})\n\n"
     
     embed = discord.Embed(title="💰 Top 15 NPC Flips", description=description, color=discord.Color.gold())
-    embed.set_footer(text="Hypixel Skyblock Bazaar Flipping Bot")
     await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="craftflip", description="Shows the top 15 craft flips based on lowest BIN and Bazaar price")
@@ -141,16 +144,14 @@ async def craft_flip(interaction: discord.Interaction):
         logging.error("Failed to fetch Bazaar, Auction, or NEU items data.")
         return await interaction.followup.send("Failed to fetch necessary data.")
 
-    # Process auction data (find lowest BIN for each item)
     lowest_bin = {}
     for auction in auction_data.get("auctions", []):
-        if auction.get("bin", False):  # Ensure it's a BIN auction
+        if auction.get("bin", False):
             item_id = auction.get("item_name", "").replace(" ", "_").upper()
             price = auction["starting_bid"]
             if item_id not in lowest_bin or price < lowest_bin[item_id]:
                 lowest_bin[item_id] = price
 
-    # Process crafting flips
     flips = []
     for item_id, item_data in neu_items.items():
         craft_cost = sum(
@@ -163,27 +164,15 @@ async def craft_flip(interaction: discord.Interaction):
             profit = lowest_price - craft_cost
             flips.append((item_id.replace("_", " ").title(), profit, craft_cost, lowest_price))
 
-    # Sort by highest profit
     top_flips = sorted(flips, key=lambda x: x[1], reverse=True)[:15]
 
-    # Format output
     description = "**Top 15 Craft Flips**\n\n"
     for name, profit, cost, price in top_flips:
         description += f"🔹 **{name}** - **{profit:,.0f}** coins profit\n"
         description += f"   🏷️ Craft Cost: {cost:,.0f} coins | 🏪 Lowest Price: {price:,.0f} coins\n\n"
 
     embed = discord.Embed(title="💰 Top 15 Craft Flips", description=description, color=discord.Color.gold())
-    embed.set_footer(text="Hypixel Skyblock Bazaar Flipping Bot")
     await interaction.followup.send(embed=embed)
 
-# Run both the bot and Flask app
 if __name__ == '__main__':
-    import threading
-
-    def run_flask():
-        app.run(host="0.0.0.0", port=8000)
-
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
-
     bot.run(BOT_TOKEN)
